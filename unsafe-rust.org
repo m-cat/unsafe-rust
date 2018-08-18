@@ -1,0 +1,413 @@
+#+AUTHOR: Marcin Swieczkowski
+#+DATE: 17-08-18
+#+TITLE: Memory Management in Unsafe Rust
+#+OPTIONS: toc:nil num:nil
+#+REVEAL_ROOT: http://cdn.jsdelivr.net/reveal.js/3.0.0/
+#+REVEAL_THEME: black
+#+REVEAL_TRANS: cube
+#+REVEAL_SPEED: 10
+
+* Agenda
++ Memory Layout (Background)
++ Problems with C
++ Enter Rust
++ Unsafe Rust and FFI
++ Memory Tools
+* Memory Layout (Background)
+** Overview
+#+CAPTION: https://knavite.blogspot.com/2014/07/linux-memory-layout-test-through-c.html
+#+ATTR_HTML: :width 50% :height 50% 
+[[https://1.bp.blogspot.com/--K44cqPMBLE/U9YysG3by-I/AAAAAAAACC4/GS_Q_vPLU3g/s1600/memlayout.png]]
+** Text section
+- Includes executable code and global variables (initialized and uninitialized).
+- Designated space does not grow.
+** The Stack
+#+CAPTION: https://en.wikipedia.org/wiki/Stack_(abstract_data_type)
+#+ATTR_HTML: :width 40% :height 40% 
+[[https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/ProgramCallStack2_en.png/800px-ProgramCallStack2_en.png]]
+*** Common problems
++ Stack overflows
++ Buffer overflow
+** The Heap
+#+CAPTION: https://developer.brewmp.com/resources/tech-guides/memory-and-heap-technology-guide/high-level-architecture/memory-fragmentation
+#+ATTR_HTML: :width 60% :height 60% 
+[[https://developer.brewmp.com/sites/default/files/resources/Fragmentation%20and%20low%20memory%20conditions=GUID-99171083-12C5-4E13-8CF6-7500737A188E=1=en=.xml/seq_allocation_deallocation=GUID-0C6A1777-6986-446E-9BC1-771B96F21B68=1=en=Low.png]]
+*** How it works
++ C program requests a memory block of a certain size using ~malloc~.
++ ~malloc~ is the standard allocator.
++ This memory must be deallocated by calling ~free~.
++ If memory is not freed, memory usage will continue to grow for the lifetime of the program.
+*** Handling heap-allocated data
+- The C way: manual management
+  - Error prone: no free, double free, invalid free.
+  - Dangling pointers
+- Garbage collection
+  - Widely used, in and out of systems languages.
+  - Invented in 1959 (!)
+- The Rust way: ownership
+** Other
++ Not all memory is directly visible to a C program.
++ E.g. files are handled through OS or library, program only sees a numeric file handle.
++ Resources can leak if not freed.
++ Handled in C++ and Rust with RAII (destructors).
+** Review
+#+CAPTION: https://knavite.blogspot.com/2014/07/linux-memory-layout-test-through-c.html
+#+ATTR_HTML: :width 50% :height 50% 
+[[https://1.bp.blogspot.com/--K44cqPMBLE/U9YysG3by-I/AAAAAAAACC4/GS_Q_vPLU3g/s1600/memlayout.png]]
+** Misc Notes
++ This layout is an abstraction, specified by C standard.
++ Holds irregardless of platform.
++ C runs on an **abstract machine**.
++ We didn't cover details e.g. virtual memory, paging, caching, registers, etc.
++ May not be reflected in hardware.
+* Problems with C
+** Already Mentioned
+- Memory leaks.
+- Segmentation faults.
+- Buffer overflows.
+** Thread safety
+- Prone to data races.
+** Undefined Behavior
+"[...] behavior, upon use of a nonportable or erroneous program construct or of erroneous data, for which this International Standard imposes no requirements"
+*** What is UB?
++ Conditions in which the compiler is allowed to do anything, according to the standard.
++ Wait, I thought computers were deterministic?
++ Adds uncertainty and mental overhead when programming -- controversial.
+*** Examples
++ Division by zero
++ Arithmetic overflow
++ Out-of-bounds access
++ Ambiguous statements
+#+BEGIN_SRC c
+a[i] = i++; // undefined behavior
+#+END_SRC
++ Dereferencing a null pointer
+*** Why?
+**** Rationale
++ Originally was meant to account for architecture differences.
+  + E.g. different ways of dealing with overflow of integer addition.
++ Early compilers did not optimize much if at all, so this is an unforeseen benefit of UB.
++ Nowadays relying on platform-specific behavior is dangerous. The compiler can do anything with UB.
+*** Signed integer addition
+#+BEGIN_SRC c
+int foo(int x) {
+    return x+1 > x; // either true or UB due to signed overflow
+}
+#+END_SRC
+
+may be compiled as:
+
+#+BEGIN_SRC asm
+foo(int):
+        movl    $1, %eax
+        ret
+#+END_SRC
+*** More
+See https://en.cppreference.com/w/cpp/language/ub#UB_and_optimization
+
+* Enter Rust
+"Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety." - rustlang.org
+** Rust vs. C
+- Performance close to C.
+- No need to worry about manual memory management.
+- No UB in safe Rust.
+  - Different philosophy: for optimizations, give compiler as much info as possible.
+
+** Rust Memory Model
++ Layout is similar to C.
++ Also includes:
+  + Ownership
+    + Bound resources freed at end of scope.
+    + Solves memory leaks.
+  + Borrowing
+    + Solves data races.
+  + Lifetimes
+    + Solves segfaults (use-after-free).
+** Rust Memory Model
+This is all enforced at compile-time. No run-time cost (unlike GC).
+
++ See https://doc.rust-lang.org/reference/memory-model.html
+
+Does have run-time checks, including:
++ out-of-bounds access -> panic! (solves buffer overflows)
++ arithmetic overflow -> depends!
++ Memory safety > performance/optimization in these cases.
+* Unsafe Rust and FFI
+** Safe vs Unsafe
+#+CAPTION: https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html
+#+ATTR_HTML: :width 80% :height 80%
+[[https://doc.rust-lang.org/nomicon/img/safeandunsafe.svg]]
+** Safe vs Unsafe
++ Safe Rust does not have UB, despite being a systems programming language.
++ It accomplishes this by:
+  + The ownership + borrowing + lifetimes model.
+  + Providing a safe API for memory allocations (~Box~, ~Vec~ etc.).
+  + Not allowing the dereference of a raw pointer or access to mutable static variables.
+** Safe vs Unsafe
++ Unsafe Rust allows you to:
+  + Dereference a raw pointer
+  + Call an unsafe function or method
+  + Access or modify a mutable static variable
+  + Implement an unsafe trait
++ Does not turn off borrow checker, but can get around it using pointers instead of references.
+** Why?
++ Unsafe allows you to:
+  + Perform optimizations in space and performance.
+  + Circumvent safety checks in cases where you believe the code is correct.
+  + Directly call an unsafe API in a way that you believe is safe, so you can provide a safe interface.
+** Examples of memory-buggy "safe" code
+"Memory unsafety is doing something with invalid data, a memory leak is not doing something with valid data."
+
+https://huonw.github.io/blog/2016/04/memory-leaks-are-memory-safe/
+
+Memory leaks are considered "safe" and possible in Rust (e.g. ~mem::forget~).
+** FFI
+What if you want to talk to another language?
+*** FFI in Rust
++ Need to use native C types.
+  + Difference between native ~char~ and FFI ~c_char~.
++ Need to use pointers. /References/ are a Rust concept.
++ Need to catch panics (undefined behavior across FFI boundary).
+*** Example
+#+BEGIN_SRC rust
+#[no_mangle]
+pub extern fn hello_rust() -> *const u8 {
+    "Hello, world!\0".as_ptr()
+}
+#+END_SRC
+*** PARSEC FFI
++ Requirements
+  + Synchronous.
+  + Must expose all functionality from native Rust PARSEC API.
+*** The way it works
+  + Output parameters.
+  + Error codes.
+  + Resource handles.
+*** PublicId Example
+#+BEGIN_SRC rust
+#[no_mangle]
+pub unsafe extern "C" fn public_id_from_bytes(
+    bytes: *const u8,
+    bytes_len: usize,
+    o_public_id: *mut *const PublicId,
+) -> i32 {
+    utils::catch_unwind_err_set(|| -> Result<_, Error> {
+        let public_id = slice::from_raw_parts(bytes, bytes_len);
+        let peer_id = PeerId::new(str::from_utf8(public_id)?);
+
+        *o_public_id = Box::into_raw(Box::new(PublicId(peer_id)));
+        Ok(())
+    })
+}
+#+END_SRC
+*** PublicId Example
+#+BEGIN_SRC rust
+#[no_mangle]
+pub unsafe extern "C" fn public_id_as_bytes(
+    public_id: *const PublicId,
+    o_bytes: *mut *const u8,
+    o_bytes_len: *mut usize,
+) -> i32 {
+    utils::catch_unwind_err_set(|| -> Result<_, Error> {
+        let bytes = (*public_id).0.as_bytes();
+
+        *o_bytes = bytes.as_ptr();
+        *o_bytes_len = bytes.len();
+        Ok(())
+    })
+}
+#+END_SRC
+*** PublicId Example
+#+BEGIN_SRC rust
+#[no_mangle]
+pub unsafe extern "C" fn public_id_free(public_id: *const PublicId) -> i32 {
+    utils::catch_unwind_err_set(|| -> Result<_, Error> {
+        let _ = Box::from_raw(public_id as *mut PublicId);
+        Ok(())
+    })
+}
+#+END_SRC
+** Undefined behavior in unsafe Rust
+*** Examples
++ Data races.
++ Dereferencing a null or dangling raw pointer.
++ Reads of undef (uninitialized) memory.
+
+See https://doc.rust-lang.org/beta/reference/behavior-considered-undefined.html
+*** Unsafe 
++ Writers of unsafe code must ensure that safe code cannot exhibit UB.
++ For example, safe interfaces in the standard library rely on "unsafe" implementations under the hood.
+  + e.g. ~Vec~, the standard "dynamic array" type in Rust. Allocates on heap.
+  + ~Vec~ contains unsafe code to perform allocations.
+  + We trust that the safe interface it provides is solid and does not leak UB.
+*** mem::initialized and related UB
+#+BEGIN_SRC rust
+unsafe {
+    // Allocate a value, of type required by FFI function.
+    let mut output: T = mem::uninitialized();
+
+    // Call FFI function.
+    let res = f(&mut output); 
+
+    // Check error code.
+    if res == 0 {
+        Ok(output)
+    } else {
+        Err(res)
+    }
+}
+#+END_SRC
+*** mem::zeroed and related UB
+#+BEGIN_SRC rust
+unsafe {
+    let mut output: T = mem::zeroed();
+
+    // Call FFI function.
+    let res = f(&mut output);
+
+    if res == 0 {
+        Ok(output)
+    } else {
+        Err(res)
+    }
+}
+#+END_SRC
+* Memory Tools
+** Why?
++ As we have seen, FFI (and other unsafe Rust) is error-prone and hard to reason about, due to UB.
++ Anytime we work with raw pointers, memory errors (dangling pointers, invalid dereferences) are possible.
++ Luckily, many of the same tools developed for C will work for Rust!
+** The Easy Way
+Compare memory before and after!
+
+#+ATTR_HTML: :width 70% :height 70% 
+[[./img/procinfo1.png]]
+** The Easy Way
+#+BEGIN_SRC rust
+let payload = b"hello world";
+
+unsafe {
+    let mut block = mem::zeroed();
+
+    assert_ffi!(block_new(
+        payload.as_ptr(),
+        payload.len(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        &mut block,
+    ));
+
+    // assert_ffi!(block_free(block as *mut _));
+}
+#+END_SRC
+** The Easy Way
+#+BEGIN_SRC rust
+let memory_before = unwrap!(procinfo::pid::statm_self()).resident;
+
+// Run the function some number of times.
+for _ in 1..num_iterations {
+    f();
+}
+
+let memory_after = unwrap!(procinfo::pid::statm_self()).resident;
+#+END_SRC
+** The Easy Way
+
+#+ATTR_HTML: :width 70% :height 70% 
+[[./img/procinfo2.png]]
+** Valgrind
+*** What is it?
++ Open source debugging framework.
++ Suite of dynamic analysis tools such as checkers and profilers.
++ Takes compiled binary code, works with many languages (including Rust).
+*** Memcheck
++ Default tool. Memory debugger.
++ Inserts instrumentation around all instructions.
++ Keeps track of validity and addressability of heap memory.
++ Replaces standard memory allocator, inserts memory guards.
++ 20-30x slowdown in performance.
+
+*** Memcheck
+It can find the following:
++ Use of uninitialized memory
++ Reading/writing memory after it has been free'd
++ Reading/writing off the end of malloc'd blocks
++ Memory leaks
+*** How to use it?
+Set system allocator (valgrind doesn't work with jemalloc):
+#+BEGIN_SRC rust
+use std::alloc::System;
+
+#[global_allocator]
+static GLOBAL: System = System;
+#+END_SRC
+Build what you want to check (e.g. tests):
+
+~cargo test ffi --no-run~
+
+Run valgrind:
+
+~valgrind --leak-check=full executable~ 
+*** Example
+
+#+ATTR_HTML: :width 70% :height 70%
+[[./img/valgrind1.png]]
+** Sanitizers
+*** Definition
++ Dynamic (run-time) memory checkers.
++ Code must be compiled using a sanitizer, unlike Valgrind.
++ Some sanitizers are available to compile Rust code as well.
++ Only the ones built on LLVM (Rust's compiler backend) will work.
+*** Examples
++ Address sanitizer: detects out-of-bounds access and use-after-free.
++ Leak sanitizer: detects memory leaks.
++ Memory sanitizer: detects reads of uninitialized memory.
++ Thread sanitizer: detects data races.
+*** How to use them?
+~RUSTFLAGS="-Z sanitizer=address" cargo test ffi --target x86_64-apple-darwin -- --nocapture~
+
+Possible targets are limited to:
++ x86_64-unknown-linux-gnu: supports the ~address~, ~leak~, ~memory~, and ~thread~ sanitizers.
++ x86_64-apple-darwin: supports the ~address~ and ~thread~ sanitizers.
+*** Example
+#+BEGIN_SRC rust
+let payload = b"hello world";
+
+unsafe {
+    let mut block = mem::zeroed();
+
+    assert_ffi!(block_new(
+      payload.as_ptr(),
+      payload.len(),
+      ptr::null(),
+      ptr::null(),
+      0,
+      &mut block,
+    ));
+   
+    assert_ffi!(block_free(block as *mut _));
+
+    let payload_output = unwrap!(utils::get_vec_u8(|output, len| block_payload(
+      block, output, len
+    )));
+}
+#+END_SRC
+*** Example
+#+ATTR_HTML: :width 70% :height 70% 
+[[./img/san1.png]]
+*** Example
+#+ATTR_HTML: :width 70% :height 70% 
+[[./img/san1.5.png]]
+*** Example
+#+ATTR_HTML: :width 70% :height 70% 
+[[./img/san2.png]]
+** Other tools
+*** proptest
++ Try to trigger panics by passing a wide range of values to functions.
++ Errors like arithmetic overflow or out-of-bounds access can be found.
+Examples of bugs found with this tech: https://huonw.github.io/blog/2016/04/myths-and-legends-about-integer-overflow-in-rust/#myth-the-checks-find-no-bugs
+*** fuzzing
++ Try to trigger panics by passing in large amounts of data.
++ Uses random data (possibly mixed with meaningful data from a corpus).
+
