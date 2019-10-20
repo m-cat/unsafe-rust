@@ -2,7 +2,7 @@
 #+DATE: 17-08-18
 #+TITLE: Memory Management in Unsafe Rust
 #+OPTIONS: toc:nil num:nil
-#+REVEAL_ROOT: http://cdn.jsdelivr.net/reveal.js/3.0.0/
+#+REVEAL_ROOT: https://cdn.jsdelivr.net/npm/reveal.js
 #+REVEAL_THEME: black
 #+REVEAL_TRANS: cube
 #+REVEAL_SPEED: 10
