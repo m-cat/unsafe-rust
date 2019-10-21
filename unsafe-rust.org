@@ -6,6 +6,7 @@
 #+REVEAL_THEME: black
 #+REVEAL_TRANS: cube
 #+REVEAL_SPEED: 10
+#+REVEAL_TITLE_SLIDE: <h1>%t<h2><br>%a<br><br>%d
 
 * Agenda
 + Memory Layout (Background)
